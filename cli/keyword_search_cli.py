@@ -1,57 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
-import pickle
-import string
 
 from nltk.stem import PorterStemmer
-
-
-class InvertedIndex:
-
-    def __init__(self):
-        self.index: dict[str, set[int]] = {}
-        self.docmap: dict[int, dict] = {}
-
-    def __add_document(self, doc_id: int, text: str) -> None:
-        stemmer = PorterStemmer()
-        tokens = {stemmer.stem(token) for token in tokenize_text(normalize_text(text))}
-        for token in tokens:
-            self.index.setdefault(token, set()).add(doc_id)
-
-    def get_document(self, term: str) -> list[int]:
-        return sorted(self.index.get(term.lower(), set()))
-
-    def build(self) -> None:
-        with open("data/movies.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for m in data["movies"]:
-            self.docmap[m["id"]] = m
-            self.__add_document(m["id"], f"{m['title']} {m['description']}")
-
-    def save(self) -> None:
-        os.makedirs("cache", exist_ok=True)
-        with open("cache/index.pkl", "wb") as f:
-            pickle.dump(self.index, f)
-        with open("cache/docmap.pkl", "wb") as f:
-            pickle.dump(self.docmap, f)
-
-    def load(self) -> None:
-        if not os.path.exists("cache/index.pkl") or not os.path.exists("cache/docmap.pkl"):
-            raise FileNotFoundError("Index not found. Run 'build' first.")
-        with open("cache/index.pkl", "rb") as f:
-            self.index = pickle.load(f)
-        with open("cache/docmap.pkl", "rb") as f:
-            self.docmap = pickle.load(f)
-
-
-def normalize_text(text: str) -> str:
-    return text.lower().translate(str.maketrans("", "", string.punctuation))
-
-
-def tokenize_text(text: str) -> set[str]:
-    return set(text.split())
+from inverted_index import InvertedIndex, normalize_text, tokenize_text
 
 
 def get_stopwords_list() -> set[str]:
@@ -91,6 +43,18 @@ def search_movies(query: str) -> list[dict]:
     return [movie for _, movie in matches[:5]]
 
 
+def rank_documents(idx: InvertedIndex, query: str) -> list[int]:
+    stemmer = PorterStemmer()
+    query_tokens = {stemmer.stem(token) for token in tokenize_text(normalize_text(query))}
+    scores: dict[int, int] = {}
+    for token in query_tokens:
+        for doc_id in idx.get_document(token):
+            scores[doc_id] = scores.get(doc_id, 0) + 1
+        if len(scores) >= 5:
+            break
+    return sorted(scores, key=lambda d: -scores[d])
+
+
 def print_results(query: str, results: list[dict]) -> None:
     print(f"Search results for: {query}")
     for idx, movie in enumerate(results, start=1):
@@ -103,36 +67,45 @@ def main() -> None:
 
     search_parser = subparsers.add_parser("search", help="Search movies using BM25")
     search_parser.add_argument("query", type=str, help="Search query")
+
     subparsers.add_parser("build", help="Build inverted index and save to cache")
+
+    tf_parser = subparsers.add_parser("tf", help="Get term frequency for a term in a document")
+    tf_parser.add_argument("doc_id", type=int, help="Document ID")
+    tf_parser.add_argument("term", type=str, help="Term to look up")
+
+    idf_parser = subparsers.add_parser("idf", help="Get IDF value for a term")
+    idf_parser.add_argument("term", type=str, help="Term to look up")
+
+    tfidf_parser = subparsers.add_parser("tfidf", help="Get TF-IDF score for a term in a document")
+    tfidf_parser.add_argument("doc_id", type=int, help="Document ID")
+    tfidf_parser.add_argument("term", type=str, help="Term to look up")
+
 
     args = parser.parse_args()
 
+    idx = InvertedIndex()
+    if args.command != "build":
+        idx.load()
+
     match args.command:
         case "search":
-            idx = InvertedIndex()
-            try:
-                idx.load()
-            except FileNotFoundError as e:
-                print(f"Error: {e}")
-                return
-            stemmer = PorterStemmer()
-            query_tokens = {stemmer.stem(token) for token in tokenize_text(normalize_text(args.query))}
-            scores: dict[int, int] = {}
-            for token in query_tokens:
-                for doc_id in idx.get_document(token):
-                    scores[doc_id] = scores.get(doc_id, 0) + 1
-                if len(scores) >= 5:
-                    break
-            ranked = sorted(scores, key=lambda d: -scores[d])
+            ranked = rank_documents(idx, args.query)
             print(f"Search results for: {args.query}")
             for doc_id in ranked[:5]:
                 movie = idx.docmap[doc_id]
                 print(f"{movie['id']}. {movie['title']}")
-
         case "build":
-            idx = InvertedIndex()
             idx.build()
             idx.save()
+        case "tf":
+            print(idx.get_tf(args.doc_id, args.term))
+        case "idf":
+            idf = idx.get_idf(args.term)
+            print(f"Inverse document frequency of '{args.term}': {idf:.2f}")
+        case "tfidf":
+            tf_idf = idx.get_tfidf(args.doc_id, args.term)
+            print(f"TF-IDF score of '{args.term}' in document '{args.doc_id}': {tf_idf:.2f}")
         case _:
             parser.print_help()
 
