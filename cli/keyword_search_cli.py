@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 import argparse
 import json
 
 from nltk.stem import PorterStemmer
-from inverted_index import InvertedIndex, normalize_text, tokenize_text
+from inverted_index import InvertedIndex, normalize_text, tokenize_text, BM25_K1, BM25_B
 
 
 def get_stopwords_list() -> set[str]:
@@ -61,6 +60,20 @@ def print_results(query: str, results: list[dict]) -> None:
         print(f"{idx}. {movie['title']}")
 
 
+def bm25_idf_command(term: str) -> float:
+    idx = InvertedIndex()
+    idx.load()
+    return idx.get_bm25_idf(term)
+
+
+def bm25_tf_command(
+    doc_id: int, term: str, k1: float | None = None, b: float | None = None
+) -> float:
+    idx = InvertedIndex()
+    idx.load()
+    return idx.get_bm25_tf(doc_id, term, k1, b)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Keyword Search CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -81,11 +94,29 @@ def main() -> None:
     tfidf_parser.add_argument("doc_id", type=int, help="Document ID")
     tfidf_parser.add_argument("term", type=str, help="Term to look up")
 
+    bm25idf_parser = subparsers.add_parser("bm25idf", help="Get BM25 IDF value for a term")
+    bm25idf_parser.add_argument("term", type=str, help="Term to look up")
+
+    bm25search_parser = subparsers.add_parser("bm25search", help="Search movies using full BM25 scoring")
+    bm25search_parser.add_argument("query", type=str, help="Search query")
+    bm25search_parser.add_argument("--limit", type=int, default=5, help="Number of results to return")
+
+    bm25_tf_parser = subparsers.add_parser(
+        "bm25tf", help="Get BM25 TF score for a given document ID and term"
+    )
+    bm25_tf_parser.add_argument("doc_id", type=int, help="Document ID")
+    bm25_tf_parser.add_argument("term", type=str, help="Term to get BM25 TF score for")
+    bm25_tf_parser.add_argument(
+        "k1", type=float, nargs='?', default=BM25_K1, help="Tunable BM25 K1 parameter"
+    )
+    bm25_tf_parser.add_argument(
+        "b", type=float, nargs='?', default=BM25_B, help="Tunable BM25 b parameter"
+    )
 
     args = parser.parse_args()
 
     idx = InvertedIndex()
-    if args.command != "build":
+    if args.command not in {"build", "bm25idf"}:
         idx.load()
 
     match args.command:
@@ -106,6 +137,17 @@ def main() -> None:
         case "tfidf":
             tf_idf = idx.get_tfidf(args.doc_id, args.term)
             print(f"TF-IDF score of '{args.term}' in document '{args.doc_id}': {tf_idf:.2f}")
+        case "bm25idf":
+            bm25idf = bm25_idf_command(args.term)
+            print(f"BM25 IDF score of '{args.term}': {bm25idf:.2f}")
+        case "bm25search":
+            results = idx.bm25_search(args.query, args.limit)
+            for rank, (doc_id, score) in enumerate(results, start=1):
+                title = idx.docmap[doc_id]["title"]
+                print(f"{rank}. ({doc_id}) {title} - Score: {score:.2f}")
+        case "bm25tf":
+            bm25tf = bm25_tf_command(args.doc_id, args.term, args.k1, args.b)
+            print(f"BM25 TF score of '{args.term}' in document '{args.doc_id}': {bm25tf:.2f}")
         case _:
             parser.print_help()
 
